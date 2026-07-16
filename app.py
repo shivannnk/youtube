@@ -646,7 +646,7 @@ def run_download_job(job_id, url, quality):
         "socket_timeout": 30,
         "extractor_args": {
             "youtube": {
-                "player_client": ["default"],
+                "player_client": ["android", "default"],
             },
             "youtubepot-bgutilhttp": {},
         },
@@ -945,8 +945,14 @@ def check_formats():
     if not url or not re.match(r"^https?://", url):
         return jsonify({"error": "Please enter a valid link (must start with http/https)."}), 400
 
+    ydl_probe_opts = {
+        "quiet": True,
+        "ignoreerrors": True,
+        "extractor_args": {"youtube": {"player_client": ["android", "default"]}},
+    }
+
     try:
-        with yt_dlp.YoutubeDL({"quiet": True, "extract_flat": "in_playlist", "ignoreerrors": True}) as ydl:
+        with yt_dlp.YoutubeDL({**ydl_probe_opts, "extract_flat": "in_playlist"}) as ydl:
             flat_info = ydl.extract_info(url, download=False)
     except Exception as e:
         return jsonify({"error": f"Could not read this link: {str(e)[:120]}"}), 400
@@ -960,10 +966,13 @@ def check_formats():
 
     # Single video: fetch its actual format list (still no download).
     try:
-        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "ignoreerrors": True}) as ydl:
+        with yt_dlp.YoutubeDL({**ydl_probe_opts, "noplaylist": True}) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:
         return jsonify({"error": f"Could not read this video: {str(e)[:120]}"}), 400
+
+    if not info:
+        return jsonify({"error": "Could not read this video. It may be blocked or unavailable right now."}), 400
 
     h264_heights = set()
     other_heights = set()
