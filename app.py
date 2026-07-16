@@ -54,6 +54,18 @@ def _cleanup_stale_downloads():
 
 threading.Thread(target=_cleanup_stale_downloads, daemon=True).start()
 
+# YouTube cookies (exported from a logged-in browser) let yt-dlp look like a
+# real signed-in user instead of a bot, which avoids YouTube's cloud/datacenter
+# IP blocks. Render's "Secret Files" feature places uploaded secret files at
+# /etc/secrets/<filename> (and also in the service root for non-Docker
+# services), so we check both locations. If neither exists (e.g. running
+# locally without cookies set up), yt-dlp just runs without cookies as before.
+_COOKIE_FILE_CANDIDATES = [
+    "/etc/secrets/cookies.txt",
+    os.path.join(BASE_DIR, "cookies.txt"),
+]
+COOKIE_FILE = next((p for p in _COOKIE_FILE_CANDIDATES if os.path.isfile(p)), None)
+
 HTML_PAGE = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -652,6 +664,8 @@ def run_download_job(job_id, url, quality):
         },
         "remote_components": ["ejs:github"],
     }
+    if COOKIE_FILE:
+        base_ydl_opts["cookiefile"] = COOKIE_FILE
     if quality != "audio":
         base_ydl_opts.update(no_reencode_args)
 
@@ -950,6 +964,8 @@ def check_formats():
         "ignoreerrors": True,
         "extractor_args": {"youtube": {"player_client": ["android", "default"]}},
     }
+    if COOKIE_FILE:
+        ydl_probe_opts["cookiefile"] = COOKIE_FILE
 
     try:
         with yt_dlp.YoutubeDL({**ydl_probe_opts, "extract_flat": "in_playlist"}) as ydl:
