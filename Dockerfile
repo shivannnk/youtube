@@ -1,8 +1,8 @@
 FROM python:3.11-slim
 
-# ffmpeg (video/audio merge ke liye) + curl (Deno install karne ke liye)
+# ffmpeg (video/audio merge ke liye) + curl/unzip (Deno install karne ke liye)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg curl \
+    ffmpeg curl unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Deno — yt-dlp ka recommended JS runtime, YouTube ke signature challenges solve karne ke liye
