@@ -56,15 +56,42 @@ threading.Thread(target=_cleanup_stale_downloads, daemon=True).start()
 
 # YouTube cookies (exported from a logged-in browser) let yt-dlp look like a
 # real signed-in user instead of a bot, which avoids YouTube's cloud/datacenter
-# IP blocks. Render's "Secret Files" feature places uploaded secret files at
-# /etc/secrets/<filename> (and also in the service root for non-Docker
-# services), so we check both locations. If neither exists (e.g. running
-# locally without cookies set up), yt-dlp just runs without cookies as before.
+# IP blocks.
+#
+# Two ways to supply them, checked in this order:
+#   1. YOUTUBE_COOKIES_B64 env var — the cookies.txt content, base64-encoded.
+#      This is the recommended path on Render: pasting raw cookies.txt into a
+#      web form can silently turn its tab characters into spaces, which
+#      breaks the Netscape cookie format. Base64 has no such issue, since
+#      it's plain single-line text.
+#   2. A secret file at /etc/secrets/cookies.txt or BASE_DIR/cookies.txt
+#      (Render's Secret Files feature), used as-is if present.
+import base64
+
 _COOKIE_FILE_CANDIDATES = [
     "/etc/secrets/cookies.txt",
     os.path.join(BASE_DIR, "cookies.txt"),
 ]
-COOKIE_FILE = next((p for p in _COOKIE_FILE_CANDIDATES if os.path.isfile(p)), None)
+
+
+def _resolve_cookie_file():
+    b64 = os.environ.get("YOUTUBE_COOKIES_B64")
+    if b64:
+        try:
+            decoded = base64.b64decode(b64)
+            out_path = os.path.join(BASE_DIR, "cookies_decoded.txt")
+            with open(out_path, "wb") as f:
+                f.write(decoded)
+            return out_path
+        except Exception:
+            pass  # fall through to secret-file check below
+    for p in _COOKIE_FILE_CANDIDATES:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+COOKIE_FILE = _resolve_cookie_file()
 
 HTML_PAGE = r"""
 <!DOCTYPE html>
