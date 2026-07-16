@@ -77,21 +77,29 @@ _COOKIE_FILE_CANDIDATES = [
 def _resolve_cookie_file():
     b64 = os.environ.get("YOUTUBE_COOKIES_B64")
     if b64:
+        print(f"[cookies] YOUTUBE_COOKIES_B64 is set, length={len(b64)} chars", flush=True)
         try:
-            decoded = base64.b64decode(b64)
+            decoded = base64.b64decode(b64, validate=False)
             out_path = os.path.join(BASE_DIR, "cookies_decoded.txt")
             with open(out_path, "wb") as f:
                 f.write(decoded)
+            print(f"[cookies] Decoded {len(decoded)} bytes to {out_path}", flush=True)
+            print(f"[cookies] First line: {decoded.splitlines()[0] if decoded else '(empty)'}", flush=True)
             return out_path
-        except Exception:
-            pass  # fall through to secret-file check below
+        except Exception as e:
+            print(f"[cookies] base64 decode FAILED: {e}", flush=True)
+    else:
+        print("[cookies] YOUTUBE_COOKIES_B64 is NOT set in environment", flush=True)
     for p in _COOKIE_FILE_CANDIDATES:
         if os.path.isfile(p):
+            print(f"[cookies] Falling back to secret file: {p}", flush=True)
             return p
+    print("[cookies] No cookie source found (env var unset/failed, no secret file present)", flush=True)
     return None
 
 
 COOKIE_FILE = _resolve_cookie_file()
+print(f"[cookies] FINAL COOKIE_FILE = {COOKIE_FILE}", flush=True)
 
 HTML_PAGE = r"""
 <!DOCTYPE html>
