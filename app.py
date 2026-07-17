@@ -693,7 +693,12 @@ def run_download_job(job_id, url, quality):
         "socket_timeout": 30,
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "default"],
+                # Same reasoning as /check-formats: android gets silently
+                # skipped once cookies are set, so use clients that actually
+                # cooperate with cookies + fall back on missing_pot formats
+                # instead of losing them entirely when no PO Token is present.
+                "player_client": ["tv", "web", "web_safari"],
+                "formats": ["missing_pot"],
             },
             "youtubepot-bgutilhttp": {},
         },
@@ -997,7 +1002,22 @@ def check_formats():
     ydl_probe_opts = {
         "quiet": True,
         "ignoreerrors": True,
-        "extractor_args": {"youtube": {"player_client": ["android", "default"]}},
+        "extractor_args": {
+            "youtube": {
+                # "android" is dropped when cookies are present (yt-dlp skips
+                # it automatically since that client doesn't support cookies),
+                # so listing it here was dead weight. "tv"/"web"/"web_safari"
+                # all work with cookies and are yt-dlp's current recommended
+                # fallback chain against SABR-only sessions.
+                "player_client": ["tv", "web", "web_safari"],
+                # Without a real PO Token, YouTube hides/skips many formats
+                # entirely (0 formats returned). "missing_pot" tells yt-dlp to
+                # surface those formats anyway — small risk of a 403 on some
+                # of them, but far better than nothing being available.
+                "formats": ["missing_pot"],
+            },
+            "youtubepot-bgutilhttp": {},
+        },
     }
     if COOKIE_FILE:
         ydl_probe_opts["cookiefile"] = COOKIE_FILE

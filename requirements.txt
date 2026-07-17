@@ -1,3 +1,4 @@
 Flask==3.0.3
-yt-dlp==2025.6.30
+yt-dlp[default]>=2025.11.12
 gunicorn==22.0.0
+bgutil-ytdlp-pot-provider>=1.1.0
