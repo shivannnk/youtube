@@ -2,7 +2,9 @@ import os
 import re
 import time
 import uuid
+import json
 import shutil
+import sqlite3
 import zipfile
 import threading
 import flask
@@ -16,11 +18,151 @@ BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# In-memory job status tracker: {job_id: {"status": ..., "message": ..., "zip_path": ...}}
-JOBS = {}
+# --- Persistent job status store (SQLite) -----------------------------------
+# Job status used to live in a plain Python dict, which is wiped whenever the
+# process restarts (e.g. Render free tier waking up from sleep). Any job_id
+# the frontend was still polling would then get "Job not found" even though
+# nothing was actually wrong with the download itself.
+#
+# JobStore below keeps the exact same dict-like usage the rest of this file
+# already relies on (JOBS[job_id] = {...}, JOBS[job_id]["status"] = "done",
+# JOBS.get(job_id), job_id in JOBS) but persists every write to a SQLite file
+# on disk, so a job's last known status/file_path survives a process restart.
+JOBS_DB_PATH = os.path.join(BASE_DIR, "jobs.db")
+
+
+class JobStore:
+    """Dict-like, SQLite-backed job status store.
+
+    Only job STATUS/METADATA (a small JSON blob per job) is persisted here —
+    not the downloaded video/zip files themselves. This is intentional: it's
+    what fixes "Job not found" after a restart. It does not resurrect a
+    download that was actively running when the process died — that thread
+    is gone and would need to be re-started by the user.
+    """
+
+    def __init__(self, db_path):
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        with self._lock:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS jobs ("
+                "job_id TEXT PRIMARY KEY, "
+                "data TEXT NOT NULL, "
+                "updated_at REAL NOT NULL"
+                ")"
+            )
+            self._conn.commit()
+
+    def __setitem__(self, job_id, value):
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO jobs (job_id, data, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(job_id) DO UPDATE SET data = excluded.data, "
+                "updated_at = excluded.updated_at",
+                (job_id, json.dumps(value), time.time()),
+            )
+            self._conn.commit()
+
+    def __getitem__(self, job_id):
+        job = self.get(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        return job
+
+    def get(self, job_id, default=None):
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        if row is None:
+            return default
+        return json.loads(row[0])
+
+    def __contains__(self, job_id):
+        return self.get(job_id) is not None
+
+    def update_field(self, job_id, key, value):
+        """Set a single field on a job's stored dict (mirrors JOBS[id][key] = value)."""
+        job = self.get(job_id, {})
+        job[key] = value
+        self[job_id] = job
+
+    def pop(self, job_id, default=None):
+        job = self.get(job_id, default)
+        with self._lock:
+            self._conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+            self._conn.commit()
+        return job
+
+    def delete_older_than(self, max_age_seconds):
+        """Remove finished/errored job rows older than max_age_seconds, so the
+        jobs.db file doesn't grow forever."""
+        cutoff = time.time() - max_age_seconds
+        with self._lock:
+            self._conn.execute("DELETE FROM jobs WHERE updated_at < ?", (cutoff,))
+            self._conn.commit()
+
+
+class _JobProxy:
+    """Lets existing code keep doing JOBS[job_id]["status"] = "done" (item
+    assignment on the dict returned by JOBS[job_id]) while still writing
+    through to SQLite immediately, instead of only mutating an in-memory
+    dict that never gets saved."""
+
+    def __init__(self, store, job_id):
+        object.__setattr__(self, "_store", store)
+        object.__setattr__(self, "_job_id", job_id)
+
+    def __getitem__(self, key):
+        return self._store.get(self._job_id, {})[key]
+
+    def __setitem__(self, key, value):
+        self._store.update_field(self._job_id, key, value)
+
+    def get(self, key, default=None):
+        return self._store.get(self._job_id, {}).get(key, default)
+
+
+class JobsDict:
+    """Top-level JOBS object: JOBS[job_id] = {...} writes a whole job;
+    JOBS[job_id] on its own returns a proxy so ["status"] = ... writes
+    through to SQLite too."""
+
+    def __init__(self, db_path):
+        self._store = JobStore(db_path)
+
+    def __setitem__(self, job_id, value):
+        self._store[job_id] = value
+
+    def __getitem__(self, job_id):
+        if self._store.get(job_id) is None:
+            raise KeyError(job_id)
+        return _JobProxy(self._store, job_id)
+
+    def get(self, job_id, default=None):
+        val = self._store.get(job_id)
+        if val is None:
+            return default
+        return _JobProxy(self._store, job_id)
+
+    def __contains__(self, job_id):
+        return job_id in self._store
+
+    def pop(self, job_id, default=None):
+        return self._store.pop(job_id, default)
+
+    def cleanup_old(self, max_age_seconds):
+        self._store.delete_older_than(max_age_seconds)
+
+
+# In-memory-looking, SQLite-backed job status tracker: {job_id: {"status": ..., "message": ..., "zip_path": ...}}
+JOBS = JobsDict(JOBS_DB_PATH)
 # Per-job cancel signal: {job_id: threading.Event}. Set by /cancel/<job_id>;
 # checked inside each download's progress hook so yt-dlp stops mid-download
 # rather than only being ignored once the job finishes on its own.
+# This one stays in-memory on purpose — a threading.Event can't be persisted,
+# and it's only meaningful while the job's own thread is alive anyway.
 CANCEL_EVENTS = {}
 
 # How long a finished file is kept on disk if the user never clicks Download.
@@ -49,6 +191,13 @@ def _cleanup_stale_downloads():
                         pass
         except Exception:
             # Never let the cleanup loop die from an unexpected error.
+            pass
+        try:
+            # Also drop old rows from jobs.db so it doesn't grow forever.
+            # Their files (if any) are already gone by now via the sweep
+            # above, the /download auto-delete, or the /cancel delete.
+            JOBS.cleanup_old(STALE_FILE_MAX_AGE_SECONDS)
+        except Exception:
             pass
 
 
@@ -1120,6 +1269,18 @@ def cancel(job_id):
         cancel_event.set()
     JOBS[job_id]["status"] = "cancelling"
     JOBS[job_id]["message"] = "Cancelling..."
+
+    # If a finished file was already sitting on disk for this job (e.g. the
+    # zip/merge step had just completed right as the user hit Cancel),
+    # delete it immediately instead of waiting for the hourly stale-file
+    # sweep — cancelled jobs shouldn't leave anything behind on the server.
+    existing_file = job.get("file_path")
+    if existing_file and os.path.exists(existing_file):
+        try:
+            os.remove(existing_file)
+        except OSError:
+            pass
+
     return jsonify({"status": "cancelling"})
 
 
