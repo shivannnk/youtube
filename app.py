@@ -123,6 +123,11 @@ class _JobProxy:
     def get(self, key, default=None):
         return self._store.get(self._job_id, {}).get(key, default)
 
+    def to_dict(self):
+        """Plain dict snapshot — use this (not the proxy itself) anywhere
+        that needs real JSON-serializable data, e.g. jsonify()."""
+        return self._store.get(self._job_id, {})
+
 
 class JobsDict:
     """Top-level JOBS object: JOBS[job_id] = {...} writes a whole job;
@@ -1289,7 +1294,7 @@ def status(job_id):
     job = JOBS.get(job_id)
     if not job:
         return jsonify({"status": "error", "message": "Job not found."}), 404
-    return jsonify(job)
+    return jsonify(job.to_dict())
 
 
 @app.route("/download/<job_id>")
