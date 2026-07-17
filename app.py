@@ -413,6 +413,15 @@ HTML_PAGE = r"""
     0%, 100% { opacity: 1; transform: translate(50%, -50%) scale(1); }
     50% { opacity: 0.75; transform: translate(50%, -50%) scale(1.15); }
   }
+  /* Once the download is done, freeze the moving-stripe and pulsing-dot
+     animations instead of letting them run forever on a finished bar. */
+  .progress-fill.complete {
+    animation: none;
+  }
+  .progress-fill.complete::after {
+    animation: none;
+    opacity: 1;
+  }
   #status {
     margin-top: 10px; font-size: 12.5px; color: #8a8f9c; white-space: pre-line;
   }
@@ -667,6 +676,7 @@ async function startDownload() {
   btn.disabled = true;
   progressSection.style.display = 'block';
   progressFill.style.width = '0%';
+  progressFill.classList.remove('complete');
   progressPct.innerText = '';
   progressLabel.innerText = 'Starting...';
   status.innerText = '';
@@ -739,6 +749,7 @@ async function checkStatus(jobId) {
     btn.disabled = false;
     cancelBtn.style.display = 'none';
     progressFill.style.width = '100%';
+    progressFill.classList.add('complete');
     progressPct.innerText = '100%';
     progressLabel.innerText = 'Complete';
     dl.style.display = 'block';
@@ -1309,13 +1320,20 @@ def download(job_id):
     ext = ".zip" if job.get("is_zip") else os.path.splitext(file_path)[1]
 
     @flask.after_this_request
-    def _delete_after_send(response):
-        # File has been handed to the user's browser — no need to keep our
-        # copy anymore. Runs after the response is fully sent.
-        try:
-            os.remove(file_path)
-        except OSError:
-            pass
+    def _delete_after_delay(response):
+        # Don't delete the file the instant it's been sent: the frontend
+        # auto-triggers this same URL right when the job finishes, and if a
+        # user then also clicks the download link/button themselves shortly
+        # after, they'd hit "File is not ready yet." because we'd already
+        # removed it. Instead, wait a bit so a near-immediate repeat request
+        # (auto-download + manual click) still finds the file.
+        def _delayed_delete():
+            time.sleep(60)
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+        threading.Thread(target=_delayed_delete, daemon=True).start()
         return response
 
     return send_file(file_path, as_attachment=True, download_name=f"{title}{ext}")
