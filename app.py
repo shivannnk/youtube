@@ -590,6 +590,14 @@ async function checkStatus(jobId) {
     dl.style.display = 'block';
     const linkText = data.is_zip ? '✅ Download your ZIP file' : '✅ Download your video';
     dl.innerHTML = '<a href="/download/' + jobId + '">' + linkText + '</a>';
+
+    if (!data.is_zip) {
+      // Single video: skip the manual second tap — start the phone-side
+      // download immediately since the server-side file is already fully
+      // ready. The visible link above stays as a fallback in case the
+      // browser blocks the automatic navigation.
+      window.location.href = '/download/' + jobId;
+    }
   } else if (data.status === 'error') {
     clearInterval(pollTimer);
     btn.disabled = false;
