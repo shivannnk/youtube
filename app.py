@@ -106,6 +106,7 @@ HTML_PAGE = r"""
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>YouTube Playlist Downloader</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -689,8 +690,12 @@ def run_download_job(job_id, url, quality):
         "ignoreerrors": True,
         "noplaylist": False,
         "postprocessors": postprocessors,
-        "concurrent_fragment_downloads": 4,
+        "concurrent_fragment_downloads": 16,
+        "http_chunk_size": 10485760,  # 10MB chunks — more overlapping connections per file
         "socket_timeout": 30,
+        "retries": 10,
+        "fragment_retries": 10,
+        "sleep_interval_requests": 1,
         "extractor_args": {
             "youtube": {
                 # Same reasoning as /check-formats: android gets silently
